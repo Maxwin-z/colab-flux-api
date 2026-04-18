@@ -252,6 +252,122 @@
     form.requestSubmit();
   });
 
+  // -----------------------------------------------------------------------
+  // History (localStorage)
+  // -----------------------------------------------------------------------
+  function readHistory() {
+    try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]"); }
+    catch { return []; }
+  }
+  function writeHistory(arr) {
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(arr));
+    } catch (e) {
+      // QuotaExceededError: drop oldest until it fits
+      while (arr.length > 1) {
+        arr.pop();
+        try { localStorage.setItem(HISTORY_KEY, JSON.stringify(arr)); return; }
+        catch { /* keep shrinking */ }
+      }
+    }
+  }
+
+  async function makeThumbnail(blob, maxEdge = 256, quality = 0.7) {
+    const url = URL.createObjectURL(blob);
+    try {
+      const img = await new Promise((resolve, reject) => {
+        const i = new Image();
+        i.onload = () => resolve(i);
+        i.onerror = reject;
+        i.src = url;
+      });
+      const ratio = Math.min(1, maxEdge / Math.max(img.width, img.height));
+      const w = Math.round(img.width * ratio);
+      const h = Math.round(img.height * ratio);
+      const canvas = document.createElement("canvas");
+      canvas.width = w; canvas.height = h;
+      canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+      return canvas.toDataURL("image/jpeg", quality);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  window.__fluxAddHistory = async function (entry) {
+    const { blob, ...meta } = entry;
+    const thumbnail = await makeThumbnail(blob);
+    // Do NOT store init_image base64 in history — too large.
+    if (meta.params && meta.params.init_image) delete meta.params.init_image;
+    const stored = { ...meta, thumbnail };
+    const arr = readHistory();
+    arr.unshift(stored);
+    while (arr.length > HISTORY_CAP) arr.pop();
+    writeHistory(arr);
+    renderHistory();
+  };
+
+  function renderHistory() {
+    const list = document.getElementById("history-list");
+    list.innerHTML = "";
+    for (const entry of readHistory()) {
+      const img = document.createElement("img");
+      img.className = "thumb";
+      img.src = entry.thumbnail;
+      img.title = `${entry.kind}: ${entry.prompt}`;
+      img.addEventListener("click", () => showHistoryEntry(entry));
+      list.appendChild(img);
+    }
+  }
+
+  async function showHistoryEntry(entry) {
+    // Re-populate form
+    form.elements["prompt"].value = entry.prompt || "";
+    if (entry.params) {
+      for (const key of ["width", "height", "num_inference_steps", "seed", "strength"]) {
+        if (entry.params[key] !== undefined && form.elements[key]) {
+          form.elements[key].value = entry.params[key];
+        }
+      }
+    }
+    // Switch mode button to match
+    document.querySelectorAll(".mode-toggle button").forEach(b =>
+      b.classList.toggle("active", b.dataset.mode === entry.kind));
+    mode = entry.kind;
+    document.getElementById("img2img-fields").classList.toggle("hidden", mode !== "img2img");
+
+    // Try to fetch full image; fall back to thumbnail
+    statusLine.textContent = "loading...";
+    try {
+      const r = await apiGet(`/tasks/${entry.task_id}/image`);
+      if (r.ok) {
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        resultImg.src = url;
+        downloadLink.href = url;
+        downloadLink.download = `${entry.task_id}.png`;
+        statusLine.textContent = "restored from server";
+      } else {
+        resultImg.src = entry.thumbnail;
+        downloadLink.removeAttribute("href");
+        statusLine.textContent = "full image no longer available (thumbnail only)";
+      }
+    } catch (e) {
+      resultImg.src = entry.thumbnail;
+      statusLine.textContent = "full image no longer available (thumbnail only)";
+    }
+    resultImg.classList.remove("hidden");
+    resultActions.classList.remove("hidden");
+  }
+
+  document.getElementById("clear-history-btn").addEventListener("click", () => {
+    if (confirm("Clear all local history?")) {
+      localStorage.removeItem(HISTORY_KEY);
+      renderHistory();
+    }
+  });
+
+  renderHistory();
+
   window.__flux = { getToken, setToken, clearToken, HISTORY_KEY, HISTORY_CAP };
   </script>
 </body>
