@@ -225,3 +225,19 @@ def test_image_409_when_not_done(test_app, monkeypatch):
     rec.result_path = None
     r = client.get(f"/tasks/{tid}/image", headers=AUTH)
     assert r.status_code == 409
+
+
+def test_create_app_smoke(tmp_path):
+    from app.main import create_app
+
+    app = create_app(
+        use_fake_pipeline=True,
+        token="smoke",
+        output_dir=tmp_path / "out",
+        input_dir=tmp_path / "in",
+    )
+    assert app is not None
+    client = TestClient(app)
+    with client:
+        r = client.get("/healthz")
+        assert r.status_code == 200
