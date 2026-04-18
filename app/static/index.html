@@ -161,6 +161,12 @@
   const resultActions = document.getElementById("result-actions");
   const downloadLink = document.getElementById("download-link");
 
+  function revokeIfBlob(url) {
+    if (typeof url === "string" && url.startsWith("blob:")) {
+      URL.revokeObjectURL(url);
+    }
+  }
+
   function formValues() {
     const fd = new FormData(form);
     const v = {
@@ -206,6 +212,9 @@
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     if (!getToken()) { showTokenModal(); return; }
+    const submitBtn = document.getElementById("generate-btn");
+    if (submitBtn.disabled) return;
+    submitBtn.disabled = true;
     resultImg.classList.add("hidden");
     resultActions.classList.add("hidden");
     statusLine.textContent = "submitting...";
@@ -225,6 +234,7 @@
       const imgRes = await apiGet(done.image_url);
       const blob = await imgRes.blob();
       const url = URL.createObjectURL(blob);
+      revokeIfBlob(resultImg.src);
       resultImg.src = url;
       resultImg.classList.remove("hidden");
       downloadLink.href = url;
@@ -245,6 +255,8 @@
       }
     } catch (err) {
       statusLine.textContent = "error: " + err.message;
+    } finally {
+      submitBtn.disabled = false;
     }
   });
 
@@ -342,16 +354,19 @@
       if (r.ok) {
         const blob = await r.blob();
         const url = URL.createObjectURL(blob);
+        revokeIfBlob(resultImg.src);
         resultImg.src = url;
         downloadLink.href = url;
         downloadLink.download = `${entry.task_id}.png`;
         statusLine.textContent = "restored from server";
       } else {
+        revokeIfBlob(resultImg.src);
         resultImg.src = entry.thumbnail;
         downloadLink.removeAttribute("href");
         statusLine.textContent = "full image no longer available (thumbnail only)";
       }
     } catch (e) {
+      revokeIfBlob(resultImg.src);
       resultImg.src = entry.thumbnail;
       statusLine.textContent = "full image no longer available (thumbnail only)";
     }

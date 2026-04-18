@@ -28,8 +28,6 @@ from app import config
 CLOUDFLARED_URLS = {
     "Linux-x86_64": "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64",
     "Linux-aarch64": "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64",
-    "Darwin-x86_64": "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64.tgz",
-    "Darwin-arm64": "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64.tgz",
 }
 
 BIN_DIR = Path("/content/bin") if Path("/content").exists() else Path.cwd() / "bin"
