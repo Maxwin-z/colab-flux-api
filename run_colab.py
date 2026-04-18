@@ -16,6 +16,7 @@ import platform
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -91,12 +92,57 @@ def start_tunnel(bin_path: Path, port: int) -> tuple[subprocess.Popen, str]:
     return proc, found_url[0]
 
 
+def wait_for_port(host: str, port: int, timeout: float = 1800.0) -> None:
+    """Poll until the TCP port accepts connections (uvicorn has finished startup)."""
+    deadline = time.time() + timeout
+    last_log = 0.0
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=1):
+                return
+        except OSError:
+            now = time.time()
+            if now - last_log >= 15:
+                remaining = int(deadline - now)
+                print(
+                    f"[run_colab] still waiting for uvicorn on {host}:{port} "
+                    f"(pipeline load in progress, {remaining}s budget left)...",
+                    flush=True,
+                )
+                last_log = now
+            time.sleep(1)
+    raise RuntimeError(f"timed out waiting for {host}:{port}")
+
+
 def main() -> int:
     port = int(os.environ.get("FLUX_PORT", "8000"))
     token = os.environ.get("FLUX_TOKEN") or config.generate_token()
     os.environ["FLUX_TOKEN"] = token
 
     bin_path = ensure_cloudflared()
+
+    import uvicorn
+
+    uv_config = uvicorn.Config("app.main:app", host="0.0.0.0", port=port, log_level="info")
+    server = uvicorn.Server(uv_config)
+
+    server_thread = threading.Thread(target=server.run, name="uvicorn", daemon=False)
+    server_thread.start()
+
+    print(
+        f"[run_colab] uvicorn starting; pipeline load takes a few minutes on first run. "
+        f"Tunnel will open once http://127.0.0.1:{port} is listening.",
+        flush=True,
+    )
+
+    try:
+        wait_for_port("127.0.0.1", port)
+    except Exception:
+        server.should_exit = True
+        server_thread.join(timeout=10)
+        raise
+
+    print("[run_colab] uvicorn is ready; opening cloudflared tunnel...", flush=True)
     tunnel_proc, public_url = start_tunnel(bin_path, port)
 
     print("=" * 70, flush=True)
@@ -104,17 +150,15 @@ def main() -> int:
     print(f"Bearer token:                          {token}", flush=True)
     print("=" * 70, flush=True)
 
-    import uvicorn
-
     def _handle_sig(_signum, _frame):
         tunnel_proc.terminate()
-        sys.exit(0)
+        server.should_exit = True
 
     signal.signal(signal.SIGINT, _handle_sig)
     signal.signal(signal.SIGTERM, _handle_sig)
 
     try:
-        uvicorn.run("app.main:app", host="0.0.0.0", port=port)
+        server_thread.join()
     finally:
         if tunnel_proc.poll() is None:
             tunnel_proc.terminate()

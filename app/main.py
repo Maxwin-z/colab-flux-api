@@ -47,9 +47,9 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if not use_fake_pipeline:
-            logger.info("loading FLUX pipeline...")
+            print("[app] loading FLUX pipeline...", flush=True)
             await asyncio.to_thread(pipeline.load)
-            logger.info("FLUX pipeline loaded")
+            print("[app] FLUX pipeline loaded; starting worker + HTTP server", flush=True)
         worker = Worker(store=store, queue=queue, pipeline=pipeline, output_dir=out_dir)
         task = asyncio.create_task(worker.run(), name="flux-worker")
         try:
