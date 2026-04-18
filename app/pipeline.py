@@ -67,22 +67,18 @@ class FluxPipelineHolder:
 
         dtype = torch.bfloat16
         self._txt2img = FluxPipeline.from_pretrained(self._model_id, torch_dtype=dtype)
-        self._txt2img.to("cuda")
+        self._txt2img.enable_model_cpu_offload()
         try:
             self._txt2img.vae.enable_tiling()
         except Exception:
             pass
+        try:
+            self._txt2img.vae.enable_slicing()
+        except Exception:
+            pass
 
-        # img2img pipeline reuses the same model weights
-        self._img2img = FluxImg2ImgPipeline(
-            vae=self._txt2img.vae,
-            text_encoder=self._txt2img.text_encoder,
-            text_encoder_2=self._txt2img.text_encoder_2,
-            tokenizer=self._txt2img.tokenizer,
-            tokenizer_2=self._txt2img.tokenizer_2,
-            transformer=self._txt2img.transformer,
-            scheduler=self._txt2img.scheduler,
-        )
+        # img2img pipeline reuses the same model weights and offload hooks
+        self._img2img = FluxImg2ImgPipeline.from_pipe(self._txt2img)
 
         self._loaded = True
 
