@@ -162,3 +162,28 @@ def test_img2img_submits_saves_init_image_and_completes(test_app, tmp_path):
     assert "init_image" not in rec.params
     from pathlib import Path as _P
     assert _P(rec.params["init_image_path"]).exists()
+
+
+def test_status_response_has_expected_fields_when_pending(test_app):
+    client, _, _, _ = test_app
+    # Submit many tasks so at least one is still pending when we query
+    ids = []
+    for _ in range(5):
+        r = client.post("/tasks/txt2img", json={"prompt": "x", "width": 256, "height": 256}, headers=AUTH)
+        ids.append(r.json()["task_id"])
+    # Query the last one: might be pending or running
+    r = client.get(f"/tasks/{ids[-1]}", headers=AUTH)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["task_id"] == ids[-1]
+    assert body["kind"] == "txt2img"
+    assert set(body.keys()) == {
+        "task_id", "kind", "status", "created_at", "started_at",
+        "finished_at", "queue_position", "image_url", "error",
+    }
+
+
+def test_status_404_for_unknown(test_app):
+    client, _, _, _ = test_app
+    r = client.get("/tasks/does-not-exist", headers=AUTH)
+    assert r.status_code == 404

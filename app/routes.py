@@ -13,7 +13,7 @@ from fastapi import status as http_status
 
 from app.auth import require_token
 from app.pipeline import PipelineProtocol
-from app.schemas import HealthResponse, ImgToImgRequest, TaskSubmitResponse, TxtToImgRequest
+from app.schemas import HealthResponse, ImgToImgRequest, TaskStatusResponse, TaskSubmitResponse, TxtToImgRequest
 from app.store import TaskRecord, TaskStore
 
 
@@ -60,23 +60,26 @@ def register_routes(
         await queue.put(task_id)
         return TaskSubmitResponse(task_id=task_id, status="pending")
 
-    @app.get("/tasks/{task_id}", dependencies=[Depends(require_token)])
-    async def _get_task_placeholder(task_id: str):
+    @app.get(
+        "/tasks/{task_id}",
+        response_model=TaskStatusResponse,
+        dependencies=[Depends(require_token)],
+    )
+    async def get_task(task_id: str) -> TaskStatusResponse:
         rec = store.get(task_id)
         if rec is None:
             raise HTTPException(status_code=404, detail="not found")
-        payload = {
-            "task_id": rec.task_id,
-            "kind": rec.kind,
-            "status": rec.status,
-            "created_at": rec.created_at.isoformat(),
-            "started_at": rec.started_at.isoformat() if rec.started_at else None,
-            "finished_at": rec.finished_at.isoformat() if rec.finished_at else None,
-            "queue_position": store.queue_position(task_id),
-            "image_url": f"/tasks/{rec.task_id}/image" if rec.status == "done" else None,
-            "error": rec.error,
-        }
-        return payload
+        return TaskStatusResponse(
+            task_id=rec.task_id,
+            kind=rec.kind,
+            status=rec.status,
+            created_at=rec.created_at.isoformat(),
+            started_at=rec.started_at.isoformat() if rec.started_at else None,
+            finished_at=rec.finished_at.isoformat() if rec.finished_at else None,
+            queue_position=store.queue_position(task_id) if rec.status == "pending" else None,
+            image_url=f"/tasks/{rec.task_id}/image" if rec.status == "done" else None,
+            error=rec.error,
+        )
 
     @app.post(
         "/tasks/img2img",
