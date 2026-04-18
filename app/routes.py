@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -12,7 +13,7 @@ from fastapi import status as http_status
 
 from app.auth import require_token
 from app.pipeline import PipelineProtocol
-from app.schemas import HealthResponse, TaskSubmitResponse, TxtToImgRequest
+from app.schemas import HealthResponse, ImgToImgRequest, TaskSubmitResponse, TxtToImgRequest
 from app.store import TaskRecord, TaskStore
 
 
@@ -77,7 +78,34 @@ def register_routes(
         }
         return payload
 
-    # /tasks/img2img, /tasks/{id}/image, and / static UI are added in later tasks.
+    @app.post(
+        "/tasks/img2img",
+        response_model=TaskSubmitResponse,
+        status_code=http_status.HTTP_202_ACCEPTED,
+        dependencies=[Depends(require_token)],
+    )
+    async def submit_img2img(req: ImgToImgRequest) -> TaskSubmitResponse:
+        task_id = uuid4().hex
+        raw = base64.b64decode(req.init_image, validate=True)
+        init_path = input_dir / f"{task_id}.png"
+        init_path.write_bytes(raw)
+
+        params = req.model_dump()
+        params.pop("init_image", None)
+        params["init_image_path"] = str(init_path)
+
+        record = TaskRecord(
+            task_id=task_id,
+            kind="img2img",
+            status="pending",
+            params=params,
+            created_at=_now(),
+        )
+        await store.create(record)
+        await queue.put(task_id)
+        return TaskSubmitResponse(task_id=task_id, status="pending")
+
+    # /tasks/{id}/image, and / static UI are added in later tasks.
     _state = {
         "store": store,
         "queue": queue,

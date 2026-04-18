@@ -114,3 +114,51 @@ def test_txt2img_submits_and_completes(test_app):
     final = _wait_for_status(client, task_id, {"done", "failed"})
     assert final["status"] == "done", final
     assert final["image_url"] == f"/tasks/{task_id}/image"
+
+
+import base64
+from io import BytesIO
+from PIL import Image
+
+
+def _make_b64_image() -> str:
+    buf = BytesIO()
+    Image.new("RGB", (256, 256), color="red").save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def test_img2img_requires_auth(test_app):
+    client, _, _, _ = test_app
+    r = client.post("/tasks/img2img", json={"prompt": "x", "init_image": _make_b64_image()})
+    assert r.status_code == 401
+
+
+def test_img2img_rejects_invalid_image(test_app):
+    client, _, _, _ = test_app
+    r = client.post(
+        "/tasks/img2img",
+        json={"prompt": "x", "init_image": base64.b64encode(b"not an image").decode("ascii")},
+        headers=AUTH,
+    )
+    assert r.status_code == 422
+
+
+def test_img2img_submits_saves_init_image_and_completes(test_app, tmp_path):
+    client, store, _, _ = test_app
+    r = client.post(
+        "/tasks/img2img",
+        json={"prompt": "x", "init_image": _make_b64_image(), "strength": 0.5},
+        headers=AUTH,
+    )
+    assert r.status_code == 202
+    task_id = r.json()["task_id"]
+
+    final = _wait_for_status(client, task_id, {"done", "failed"})
+    assert final["status"] == "done", final
+
+    rec = store.get(task_id)
+    assert "init_image_path" in rec.params
+    # init_image raw base64 should NOT be retained in memory
+    assert "init_image" not in rec.params
+    from pathlib import Path as _P
+    assert _P(rec.params["init_image_path"]).exists()
