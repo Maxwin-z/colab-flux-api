@@ -230,6 +230,102 @@
   padding: 1px 5px;
   pointer-events: none;
 }
+
+.stage-box {
+  width: min(100%, 900px);
+  aspect-ratio: 1 / 1;
+  max-height: calc(100vh - 200px);
+  border-radius: var(--radius);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+}
+#stage[data-state="empty"] .stage-box,
+#stage[data-state="loading"] .stage-box {
+  border: 2px dashed var(--border);
+  background: transparent;
+}
+#stage[data-state="loading"] .stage-box {
+  background:
+    linear-gradient(90deg, var(--surface) 0%, var(--surface-2) 50%, var(--surface) 100%);
+  background-size: 200% 100%;
+  animation: skeleton 1.6s linear infinite;
+}
+@keyframes skeleton { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+#stage[data-state="empty"] .empty-content,
+#stage[data-state="loading"] .loading-content { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+#stage[data-state="empty"] .loading-content,
+#stage[data-state="empty"] .done-content,
+#stage[data-state="loading"] .empty-content,
+#stage[data-state="loading"] .done-content,
+#stage[data-state="done"] .empty-content,
+#stage[data-state="done"] .loading-content { display: none; }
+
+#stage[data-state="done"] .stage-box { border: none; background: transparent; }
+#stage[data-state="done"] #result-image {
+  max-width: 100%;
+  max-height: calc(100vh - 200px);
+  object-fit: contain;
+  border-radius: var(--radius);
+  box-shadow: 0 8px 32px #0006;
+  display: block;
+}
+
+.spinner {
+  width: 28px; height: 28px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 800ms linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.stage-empty-icon { width: 48px; height: 48px; color: var(--text-mute); }
+
+.meta-bar {
+  width: min(100%, 900px);
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 16px;
+  min-height: 40px;
+  font-size: 13px;
+}
+.meta-bar .prompt-excerpt {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.meta-bar .params-summary {
+  color: var(--text-dim);
+  font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.meta-bar .actions { display: flex; gap: 8px; }
+.meta-bar a, .meta-bar button {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  padding: 4px 10px;
+  font-size: 12px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.meta-bar a:hover, .meta-bar button:hover { color: var(--text); border-color: var(--text-dim); background: var(--surface-2); }
+
+#stage[data-state="done"] .meta-bar { display: grid; }
+#stage[data-state="empty"] .meta-bar,
+#stage[data-state="loading"] .meta-bar { display: none; }
 </style>
 </head>
 <body>
@@ -257,7 +353,33 @@
     <div id="history-list"></div>
   </aside>
 
-  <main>
+  <main id="stage" data-state="empty">
+    <div class="stage-box">
+      <div class="empty-content">
+        <svg class="stage-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+          <rect x="3" y="3" width="18" height="18" rx="2"/>
+          <circle cx="8.5" cy="8.5" r="1.5"/>
+          <path d="M21 15l-5-5L5 21"/>
+        </svg>
+        <div>Your image will appear here</div>
+      </div>
+      <div class="loading-content">
+        <div class="spinner" aria-hidden="true"></div>
+        <div id="stage-loading-label" class="mono" style="font-size:12px;color:var(--text-dim)">starting…</div>
+      </div>
+      <img id="result-image" alt="generated image" />
+    </div>
+    <div class="meta-bar">
+      <div class="prompt-excerpt" id="meta-prompt"></div>
+      <div class="params-summary" id="meta-params"></div>
+      <div class="actions">
+        <a id="download-link" download>Download</a>
+        <button id="rerun-btn" type="button">Re-run</button>
+      </div>
+    </div>
+  </main>
+
+  <section id="controls">
     <div class="mode-toggle">
       <button type="button" data-mode="txt2img" class="active">txt2img</button>
       <button type="button" data-mode="img2img">img2img</button>
@@ -283,18 +405,7 @@
       <button id="generate-btn" type="submit">Generate</button>
     </form>
 
-    <div id="result">
-      <div id="status-line"></div>
-      <img id="result-image" class="hidden" alt="generated image" />
-      <div id="result-actions" class="hidden">
-        <a id="download-link" download>Download</a>
-        <button id="rerun-btn" type="button">Re-run with same params</button>
-      </div>
-    </div>
-  </main>
-
-  <section id="controls">
-    <div class="section-label">controls go here (task 5)</div>
+    <div id="status-line"></div>
   </section>
 
   <div id="token-modal" class="modal-backdrop hidden">
@@ -323,6 +434,20 @@
     const m = Math.floor(ms / 60_000);
     const s = Math.floor((ms % 60_000) / 1000);
     return `${m}m ${s.toString().padStart(2, "0")}s`;
+  }
+
+  function formatParams(body, taskDetail) {
+    const parts = [];
+    if (body.width && body.height) {
+      parts.push(body.width === body.height ? `${body.width}²` : `${body.width}×${body.height}`);
+    }
+    if (body.num_inference_steps != null) parts.push(`${body.num_inference_steps} steps`);
+    if (body.seed != null) parts.push(`seed ${body.seed}`);
+    if (taskDetail && taskDetail.started_at && taskDetail.finished_at) {
+      const ms = Date.parse(taskDetail.finished_at) - Date.parse(taskDetail.started_at);
+      parts.push(formatDuration(ms));
+    }
+    return parts.join(" · ");
   }
 
   function getToken()       { return localStorage.getItem(TOKEN_KEY) || ""; }
@@ -389,7 +514,6 @@
   const form = document.getElementById("gen-form");
   const statusLine = document.getElementById("status-line");
   const resultImg = document.getElementById("result-image");
-  const resultActions = document.getElementById("result-actions");
   const downloadLink = document.getElementById("download-link");
 
   function revokeIfBlob(url) {
@@ -446,9 +570,11 @@
     const submitBtn = document.getElementById("generate-btn");
     if (submitBtn.disabled) return;
     submitBtn.disabled = true;
-    resultImg.classList.add("hidden");
-    resultActions.classList.add("hidden");
-    statusLine.textContent = "submitting...";
+
+    const stage = document.getElementById("stage");
+    stage.dataset.state = "loading";
+    document.getElementById("stage-loading-label").textContent = "submitting…";
+    statusLine.textContent = "submitting…";
 
     try {
       let body = formValues();
@@ -467,13 +593,14 @@
       const url = URL.createObjectURL(blob);
       revokeIfBlob(resultImg.src);
       resultImg.src = url;
-      resultImg.classList.remove("hidden");
       downloadLink.href = url;
       downloadLink.download = `${submitted.task_id}.png`;
-      resultActions.classList.remove("hidden");
+
+      stage.dataset.state = "done";
+      document.getElementById("meta-prompt").textContent = body.prompt || "";
+      document.getElementById("meta-params").textContent = formatParams(body, done);
       statusLine.textContent = "done";
 
-      // History hook — added in Task 17
       if (window.__fluxAddHistory) {
         await window.__fluxAddHistory({
           task_id: submitted.task_id,
@@ -486,6 +613,7 @@
       }
     } catch (err) {
       statusLine.textContent = "error: " + err.message;
+      stage.dataset.state = resultImg.naturalWidth > 0 ? "done" : "empty";
     } finally {
       submitBtn.disabled = false;
     }
@@ -585,7 +713,6 @@
   }
 
   async function showHistoryEntry(entry) {
-    // Re-populate form
     form.elements["prompt"].value = entry.prompt || "";
     if (entry.params) {
       for (const key of ["width", "height", "num_inference_steps", "seed", "strength"]) {
@@ -594,14 +721,16 @@
         }
       }
     }
-    // Switch mode button to match
     document.querySelectorAll(".mode-toggle button").forEach(b =>
       b.classList.toggle("active", b.dataset.mode === entry.kind));
     mode = entry.kind;
     document.getElementById("img2img-fields").classList.toggle("hidden", mode !== "img2img");
 
-    // Try to fetch full image; fall back to thumbnail
-    statusLine.textContent = "loading...";
+    const stage = document.getElementById("stage");
+    stage.dataset.state = "loading";
+    document.getElementById("stage-loading-label").textContent = "loading from history…";
+    statusLine.textContent = "loading…";
+
     try {
       const r = await apiGet(`/tasks/${entry.task_id}/image`);
       if (r.ok) {
@@ -616,15 +745,20 @@
         revokeIfBlob(resultImg.src);
         resultImg.src = entry.thumbnail;
         downloadLink.removeAttribute("href");
-        statusLine.textContent = "full image no longer available (thumbnail only)";
+        statusLine.textContent = "thumbnail only";
       }
     } catch (e) {
       revokeIfBlob(resultImg.src);
       resultImg.src = entry.thumbnail;
-      statusLine.textContent = "full image no longer available (thumbnail only)";
+      statusLine.textContent = "thumbnail only";
     }
-    resultImg.classList.remove("hidden");
-    resultActions.classList.remove("hidden");
+
+    stage.dataset.state = "done";
+    document.getElementById("meta-prompt").textContent = entry.prompt || "";
+    document.getElementById("meta-params").textContent = formatParams(entry.params || {}, {
+      started_at: entry.started_at,
+      finished_at: entry.finished_at,
+    });
   }
 
   document.getElementById("clear-history-btn").addEventListener("click", () => {
