@@ -118,7 +118,12 @@ def register_routes(
             raise HTTPException(status_code=409, detail=f"task status is {rec.status}")
         return FileResponse(rec.result_path, media_type="image/png", filename=f"{task_id}.png")
 
-    # / static UI are added in later tasks.
+    _static_dir = Path(__file__).parent / "static"
+
+    @app.get("/", include_in_schema=False)
+    def index():
+        return FileResponse(_static_dir / "index.html", media_type="text/html")
+
     _state = {
         "store": store,
         "queue": queue,

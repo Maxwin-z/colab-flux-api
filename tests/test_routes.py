@@ -241,3 +241,12 @@ def test_create_app_smoke(tmp_path):
     with client:
         r = client.get("/healthz")
         assert r.status_code == 200
+
+
+def test_root_serves_html_without_auth(test_app):
+    client, _, _, _ = test_app
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    assert "<title>FLUX Image Generator</title>" in r.text
+    assert "localStorage" in r.text  # token handling lives in JS
