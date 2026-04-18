@@ -177,6 +177,30 @@
   .token-pill.set .dot { background: var(--success); }
   .token-pill.set { color: var(--text); }
 
+  .ws-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-dim);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 4px 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  .ws-pill .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-mute);
+    transition: background 120ms;
+  }
+  .ws-pill[data-state="open"]         .dot { background: var(--success); }
+  .ws-pill[data-state="reconnecting"] .dot { background: #d8c27d; animation: pulse 1.2s ease-in-out infinite; }
+  .ws-pill[data-state="auth"]         .dot { background: var(--danger); }
+  .ws-pill[data-state="open"]         { color: var(--text); }
+
 #history-pane .history-head {
   display: flex;
   align-items: center;
@@ -508,6 +532,7 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: none;
       <span class="sub">Image Generator</span>
     </div>
     <div class="header-right">
+      <span id="ws-indicator" class="ws-pill" data-state="closed"><span class="dot"></span><span class="label">offline</span></span>
       <span id="token-indicator" class="token-pill"><span class="dot"></span><span class="label">token not set</span></span>
       <button id="clear-token-btn" type="button" class="ghost-btn">Clear</button>
     </div>
@@ -695,7 +720,12 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: none;
 
   function getToken()       { return localStorage.getItem(TOKEN_KEY) || ""; }
   function setToken(t)      { localStorage.setItem(TOKEN_KEY, t); updateTokenIndicator(); }
-  function clearToken()     { localStorage.removeItem(TOKEN_KEY); updateTokenIndicator(); showTokenModal(); }
+  function clearToken()     {
+    localStorage.removeItem(TOKEN_KEY);
+    updateTokenIndicator();
+    showTokenModal();
+    if (window.__flux && window.__flux.ws) window.__flux.ws.reconnectNow();
+  }
   function updateTokenIndicator() {
     const el = document.getElementById("token-indicator");
     const label = el.querySelector(".label");
@@ -712,7 +742,11 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: none;
 
   document.getElementById("token-save").addEventListener("click", () => {
     const v = document.getElementById("token-input").value.trim();
-    if (v) { setToken(v); hideTokenModal(); }
+    if (v) {
+      setToken(v);
+      hideTokenModal();
+      if (window.__flux && window.__flux.ws) window.__flux.ws.reconnectNow();
+    }
   });
   document.getElementById("clear-token-btn").addEventListener("click", clearToken);
 
@@ -733,23 +767,221 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: none;
   });
 
   // -----------------------------------------------------------------------
-  // API helpers
+  // API helpers — HTTP is only used for image download now.
   // -----------------------------------------------------------------------
-  async function apiPost(path, body) {
-    const res = await fetch(path, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + getToken() },
-      body: JSON.stringify(body),
-    });
-    if (res.status === 401) { clearToken(); throw new Error("unauthorized"); }
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
-  }
   async function apiGet(path) {
     const res = await fetch(path, { headers: { "Authorization": "Bearer " + getToken() } });
     if (res.status === 401) { clearToken(); throw new Error("unauthorized"); }
     return res;
   }
+
+  // -----------------------------------------------------------------------
+  // WSClient — single long-lived connection; submit + subscribe multiplexed.
+  // -----------------------------------------------------------------------
+  class WSClient {
+    constructor(tokenProvider, onConnState) {
+      this.getToken = tokenProvider;
+      this.onConnState = onConnState || (() => {});
+      this.ws = null;
+      this.connState = "closed";   // "open" | "connecting" | "reconnecting" | "auth" | "closed"
+      this.nextReqId = 1;
+      this.pendingReqs = new Map(); // req_id -> { resolveTaskId, rejectTaskId }
+      this.activeSubs = new Map();  // task_id -> Subscription
+      this.reconnectDelay = 1000;
+      this.reconnectMax = 30000;
+      this._reconnectTimer = null;
+      this._intentionallyClosed = false;
+    }
+
+    start() { this._connect(); }
+
+    reconnectNow() {
+      // Called when the token changes. Tear down cleanly, reconnect.
+      this._intentionallyClosed = true;
+      if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
+      if (this.ws) { try { this.ws.close(); } catch (_) {} }
+      this._intentionallyClosed = false;
+      this.reconnectDelay = 1000;
+      this._connect();
+    }
+
+    _setState(s) {
+      this.connState = s;
+      try { this.onConnState(s); } catch (e) { console.error(e); }
+    }
+
+    _connect() {
+      const token = this.getToken();
+      if (!token) { this._setState("auth"); return; }
+      this._setState("connecting");
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      const url = `${proto}//${location.host}/ws?token=${encodeURIComponent(token)}`;
+      let ws;
+      try { ws = new WebSocket(url); }
+      catch (e) { this._scheduleReconnect(); return; }
+      this.ws = ws;
+      ws.onopen = () => {
+        this.reconnectDelay = 1000;
+        this._setState("open");
+        // Re-subscribe to every active subscription the server forgot about.
+        for (const [task_id, sub] of this.activeSubs) {
+          const req_id = "r" + this.nextReqId++;
+          sub.subscribeReqId = req_id;
+          try { ws.send(JSON.stringify({ type: "subscribe", req_id, task_id })); } catch (_) {}
+        }
+      };
+      ws.onmessage = (ev) => {
+        let msg;
+        try { msg = JSON.parse(ev.data); } catch (_) { return; }
+        this._handle(msg);
+      };
+      ws.onerror = () => { /* onclose will follow */ };
+      ws.onclose = (ev) => this._handleClose(ev);
+    }
+
+    _handleClose(ev) {
+      // Reject every pending submit — we don't know if the server got it.
+      for (const [, p] of this.pendingReqs) {
+        try { p.rejectTaskId(new Error("connection lost before submit confirmed")); } catch (_) {}
+      }
+      this.pendingReqs.clear();
+
+      if (this._intentionallyClosed) { return; }
+      if (ev && ev.code === 4401) {
+        this._setState("auth");
+        // Reject every active sub's done promise — they won't make progress.
+        for (const [, sub] of this.activeSubs) {
+          try { sub.rejectDone(Object.assign(new Error("unauthorized"), { code: "auth" })); } catch (_) {}
+        }
+        this.activeSubs.clear();
+        return;
+      }
+      this._setState("reconnecting");
+      this._scheduleReconnect();
+    }
+
+    _scheduleReconnect() {
+      if (this._reconnectTimer) return;
+      this._reconnectTimer = setTimeout(() => {
+        this._reconnectTimer = null;
+        this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.reconnectMax);
+        this._connect();
+      }, this.reconnectDelay);
+    }
+
+    _handle(msg) {
+      if (msg.type === "submitted") {
+        const p = this.pendingReqs.get(msg.req_id);
+        if (p) { this.pendingReqs.delete(msg.req_id); p.resolveTaskId(msg.task_id); }
+      } else if (msg.type === "state") {
+        const sub = this.activeSubs.get(msg.task_id);
+        if (!sub) return;
+        try { sub.onState(msg); } catch (e) { console.error(e); }
+        if (msg.status === "done" || msg.status === "failed") {
+          this.activeSubs.delete(msg.task_id);
+          if (msg.status === "done") sub.resolveDone(msg);
+          else sub.rejectDone(Object.assign(new Error(msg.error || "task failed"), { state: msg }));
+        }
+      } else if (msg.type === "error") {
+        // Reject any pending submit with this req_id.
+        if (msg.req_id != null && this.pendingReqs.has(msg.req_id)) {
+          const p = this.pendingReqs.get(msg.req_id);
+          this.pendingReqs.delete(msg.req_id);
+          p.rejectTaskId(Object.assign(new Error(msg.message || "error"), { code: msg.code }));
+          return;
+        }
+        // Reject any subscribe whose subscribeReqId matches.
+        if (msg.req_id != null) {
+          for (const [task_id, sub] of this.activeSubs) {
+            if (sub.subscribeReqId === msg.req_id) {
+              this.activeSubs.delete(task_id);
+              sub.rejectDone(Object.assign(new Error(msg.message || "error"), { code: msg.code }));
+              return;
+            }
+          }
+        }
+        console.warn("unhandled ws error", msg);
+      }
+    }
+
+    _send(obj) {
+      if (this.ws && this.connState === "open") {
+        try { this.ws.send(JSON.stringify(obj)); return true; }
+        catch (_) { return false; }
+      }
+      return false;
+    }
+
+    submit({ kind, params, onState }) {
+      const req_id = "c" + this.nextReqId++;
+      const sub = {
+        taskId: null,
+        subscribeReqId: null,
+        onState: onState || (() => {}),
+        resolveDone: null,
+        rejectDone: null,
+      };
+      sub.done = new Promise((res, rej) => { sub.resolveDone = res; sub.rejectDone = rej; });
+      sub.taskId = new Promise((resolveTaskId, rejectTaskId) => {
+        this.pendingReqs.set(req_id, { resolveTaskId, rejectTaskId });
+      }).then((task_id) => {
+        sub.task_id = task_id;
+        this.activeSubs.set(task_id, sub);
+        return task_id;
+      });
+      sub.taskId.catch((err) => { try { sub.rejectDone(err); } catch (_) {} });
+      sub.cancel = () => {
+        if (sub.task_id) {
+          this.activeSubs.delete(sub.task_id);
+          this._send({ type: "unsubscribe", task_id: sub.task_id });
+        }
+      };
+      const ok = this._send({ type: "submit", req_id, kind, params });
+      if (!ok) {
+        const p = this.pendingReqs.get(req_id);
+        if (p) { this.pendingReqs.delete(req_id); p.rejectTaskId(new Error("not connected")); }
+      }
+      return sub;
+    }
+
+    subscribe(task_id, { onState } = {}) {
+      const req_id = "c" + this.nextReqId++;
+      const sub = {
+        task_id,
+        subscribeReqId: req_id,
+        onState: onState || (() => {}),
+        resolveDone: null,
+        rejectDone: null,
+      };
+      sub.done = new Promise((res, rej) => { sub.resolveDone = res; sub.rejectDone = rej; });
+      this.activeSubs.set(task_id, sub);
+      sub.cancel = () => {
+        this.activeSubs.delete(task_id);
+        this._send({ type: "unsubscribe", task_id });
+      };
+      this._send({ type: "subscribe", req_id, task_id });
+      // If offline, onopen will resubscribe using a new req_id.
+      return sub;
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // WSClient instance + connection indicator wiring
+  // -----------------------------------------------------------------------
+  function renderWsIndicator(state) {
+    const el = document.getElementById("ws-indicator");
+    const label = el.querySelector(".label");
+    el.dataset.state = state;
+    label.textContent = ({
+      open: "online",
+      connecting: "connecting…",
+      reconnecting: "reconnecting…",
+      auth: "unauthorized",
+      closed: "offline",
+    })[state] || state;
+  }
+  const ws = new WSClient(() => getToken(), renderWsIndicator);
+  if (getToken()) ws.start(); else renderWsIndicator("auth");
 
   // -----------------------------------------------------------------------
   // Submit form
@@ -794,26 +1026,6 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: none;
     });
   }
 
-  async function pollUntilDone(taskId) {
-    let timerStarted = false;
-    while (true) {
-      const r = await apiGet(`/tasks/${taskId}`);
-      if (!r.ok) throw new Error(`status ${r.status}`);
-      const body = await r.json();
-      if (body.status === "done") return body;
-      if (body.status === "failed") throw new Error(body.error || "task failed");
-      if (body.status === "running" && !timerStarted) {
-        startStageTimer();
-        timerStarted = true;
-      }
-      if (!timerStarted) {
-        const pos = body.queue_position ? ` · queue pos ${body.queue_position}` : "";
-        setStatus(null, `${body.status}${pos}`);
-      }
-      await new Promise(r => setTimeout(r, 1000));
-    }
-  }
-
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     if (!getToken()) { showTokenModal(); return; }
@@ -826,17 +1038,30 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: none;
     document.getElementById("stage-loading-label").textContent = "submitting…";
     setStatus(null, "submitting…");
 
+    let timerStarted = false;
     try {
       let body = formValues();
-      let path = "/tasks/txt2img";
       if (mode === "img2img") {
         const file = form.elements["init_image_file"].files[0];
         if (!file) throw new Error("select an image file");
         body.init_image = await fileToBase64(file);
-        path = "/tasks/img2img";
       }
-      const submitted = await apiPost(path, body);
-      const done = await pollUntilDone(submitted.task_id);
+
+      const sub = ws.submit({
+        kind: mode,
+        params: body,
+        onState: (s) => {
+          if (s.status === "running" && !timerStarted) {
+            startStageTimer();
+            timerStarted = true;
+          } else if (s.status === "pending" && !timerStarted) {
+            const pos = s.queue_position ? ` · queue pos ${s.queue_position}` : "";
+            setStatus(null, `pending${pos}`);
+          }
+        },
+      });
+      const task_id = await sub.taskId;
+      const done = await sub.done;
 
       const imgRes = await apiGet(done.image_url);
       const blob = await imgRes.blob();
@@ -844,7 +1069,7 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: none;
       revokeIfBlob(resultImg.src);
       resultImg.src = url;
       downloadLink.href = url;
-      downloadLink.download = `${submitted.task_id}.png`;
+      downloadLink.download = `${task_id}.png`;
 
       stage.dataset.state = "done";
       document.getElementById("meta-prompt").textContent = body.prompt || "";
@@ -855,7 +1080,7 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: none;
 
       if (window.__fluxAddHistory) {
         await window.__fluxAddHistory({
-          task_id: submitted.task_id,
+          task_id,
           kind: mode,
           prompt: body.prompt,
           params: body,
@@ -987,10 +1212,22 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: none;
     document.getElementById("stage-loading-label").textContent = "loading from history…";
     setStatus(null, "loading…");
 
+    const showThumbOnly = (msg) => {
+      revokeIfBlob(resultImg.src);
+      resultImg.src = entry.thumbnail;
+      downloadLink.removeAttribute("href");
+      setStatus(null, msg);
+    };
+
     try {
-      const r = await apiGet(`/tasks/${entry.task_id}/image`);
-      if (r.ok) {
-        const blob = await r.blob();
+      // Ask the server for the task's current state. If the server still has
+      // it (same Colab session), we get back status=done with an image_url.
+      // If the server never knew it / restarted, we fall through to thumbnail.
+      const sub = ws.subscribe(entry.task_id);
+      const state = await sub.done;
+      const imgRes = await apiGet(state.image_url);
+      if (imgRes.ok) {
+        const blob = await imgRes.blob();
         const url = URL.createObjectURL(blob);
         revokeIfBlob(resultImg.src);
         resultImg.src = url;
@@ -998,15 +1235,10 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: none;
         downloadLink.download = `${entry.task_id}.png`;
         setStatus(null, "restored from server");
       } else {
-        revokeIfBlob(resultImg.src);
-        resultImg.src = entry.thumbnail;
-        downloadLink.removeAttribute("href");
-        setStatus(null, "thumbnail only");
+        showThumbOnly("thumbnail only");
       }
     } catch (e) {
-      revokeIfBlob(resultImg.src);
-      resultImg.src = entry.thumbnail;
-      setStatus(null, "thumbnail only");
+      showThumbOnly("thumbnail only");
     }
 
     stage.dataset.state = "done";
@@ -1081,7 +1313,7 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: none;
 
   renderHistory();
 
-  window.__flux = { getToken, setToken, clearToken, HISTORY_KEY, HISTORY_CAP };
+  window.__flux = { getToken, setToken, clearToken, HISTORY_KEY, HISTORY_CAP, ws };
 
   document.addEventListener("keydown", (e) => {
     // Esc: close token modal

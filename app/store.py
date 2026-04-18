@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal, Optional
+from typing import Any, Awaitable, Callable, Literal, Optional
 
 
 Status = Literal["pending", "running", "done", "failed"]
 Kind = Literal["txt2img", "img2img"]
+
+OnChange = Callable[["TaskRecord"], Awaitable[None]]
 
 
 @dataclass
@@ -26,11 +28,18 @@ class TaskRecord:
 
 
 class TaskStore:
-    """Dictionary-backed task store. Writes are serialized with an asyncio.Lock."""
+    """Dictionary-backed task store. Writes are serialized with an asyncio.Lock.
 
-    def __init__(self) -> None:
+    When `on_change` is supplied, it is awaited once per `set_status` with the
+    updated record. The callback runs OUTSIDE the store lock so a slow broadcast
+    cannot block subsequent mutations. `create` does not invoke on_change — the
+    initial "pending" snapshot is the submit handler's responsibility.
+    """
+
+    def __init__(self, on_change: Optional[OnChange] = None) -> None:
         self._records: dict[str, TaskRecord] = {}
         self._lock = asyncio.Lock()
+        self._on_change = on_change
 
     async def create(self, record: TaskRecord) -> None:
         async with self._lock:
@@ -48,6 +57,8 @@ class TaskStore:
                 if not hasattr(record, k):
                     raise AttributeError(f"TaskRecord has no field {k!r}")
                 setattr(record, k, v)
+        if self._on_change is not None:
+            await self._on_change(record)
 
     def queue_position(self, task_id: str) -> Optional[int]:
         """1-based position among pending tasks, ordered by created_at.

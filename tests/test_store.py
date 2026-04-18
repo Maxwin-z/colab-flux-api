@@ -89,3 +89,52 @@ async def test_queue_depth_counts_pending_and_running():
     await store.set_status("a", status="running")
     await store.set_status("c", status="done")
     assert store.queue_depth() == 2  # a (running) + b (pending)
+
+
+@pytest.mark.asyncio
+async def test_on_change_is_invoked_with_updated_record():
+    calls: list[tuple[str, str]] = []
+
+    async def on_change(rec):
+        calls.append((rec.task_id, rec.status))
+
+    store = TaskStore(on_change=on_change)
+    await store.create(_record("a"))
+    # create does NOT invoke on_change (initial "pending" snapshot is sent by ws submit handler)
+    assert calls == []
+
+    await store.set_status("a", status="running")
+    await store.set_status("a", status="done")
+    assert calls == [("a", "running"), ("a", "done")]
+
+
+@pytest.mark.asyncio
+async def test_on_change_runs_outside_store_lock():
+    """The callback must run outside _lock so a slow callback doesn't block
+    subsequent set_status calls from the same loop."""
+    store_box: dict[str, TaskStore] = {}
+    observed_during_callback: list[str] = []
+
+    async def on_change(rec):
+        # While inside the callback, issuing another mutate must not deadlock.
+        await store_box["store"].set_status("b", status="running") if rec.task_id == "a" else None
+        observed_during_callback.append(rec.task_id)
+
+    store = TaskStore(on_change=on_change)
+    store_box["store"] = store
+    await store.create(_record("a"))
+    await store.create(_record("b"))
+    # This must complete without hanging; the nested set_status("b", ...) in
+    # the callback only works because on_change is outside the lock.
+    await asyncio.wait_for(store.set_status("a", status="running"), timeout=1.0)
+    assert "a" in observed_during_callback
+    assert "b" in observed_during_callback
+    assert store.get("b").status == "running"
+
+
+@pytest.mark.asyncio
+async def test_on_change_none_is_default():
+    # Default behavior: no callback, no error.
+    store = TaskStore()
+    await store.create(_record("a"))
+    await store.set_status("a", status="running")  # must not raise

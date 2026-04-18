@@ -17,6 +17,8 @@ from app.pipeline import FakePipeline, FluxPipelineHolder, PipelineProtocol
 from app.queue_worker import Worker
 from app.routes import register_routes
 from app.store import TaskStore
+from app.ws import register_ws, to_snapshot_dict
+from app.ws_hub import SubscriptionHub
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +40,12 @@ def create_app(
     out_dir.mkdir(parents=True, exist_ok=True)
     in_dir.mkdir(parents=True, exist_ok=True)
 
-    store = TaskStore()
+    hub = SubscriptionHub()
+
+    async def _on_task_change(rec) -> None:
+        await hub.publish(rec.task_id, {"type": "state", **to_snapshot_dict(rec)})
+
+    store = TaskStore(on_change=_on_task_change)
     queue: asyncio.Queue[str] = asyncio.Queue()
 
     pipeline: PipelineProtocol
@@ -69,6 +76,14 @@ def create_app(
         pipeline=pipeline,
         output_dir=out_dir,
         input_dir=in_dir,
+    )
+    register_ws(
+        app,
+        hub=hub,
+        store=store,
+        queue=queue,
+        input_dir=in_dir,
+        expected_token=resolved_token,
     )
     app.state.token = resolved_token
     return app
