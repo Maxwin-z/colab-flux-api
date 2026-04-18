@@ -71,31 +71,19 @@ class FluxPipelineHolder:
 
         t0 = time.time()
         dtype = torch.bfloat16
-        log(f"stage 1/4 downloading & loading weights for {self._model_id} (dtype=bfloat16)")
+        log(f"stage 1/3 downloading & loading weights for {self._model_id} (dtype=bfloat16)")
         self._txt2img = FluxPipeline.from_pretrained(self._model_id, torch_dtype=dtype)
-        log(f"stage 1/4 done in {time.time() - t0:.1f}s")
+        log(f"stage 1/3 done in {time.time() - t0:.1f}s")
 
         t1 = time.time()
-        log("stage 2/4 installing CPU-offload hooks (components will stream GPU<->CPU)")
-        self._txt2img.enable_model_cpu_offload()
-        log(f"stage 2/4 done in {time.time() - t1:.1f}s")
+        log("stage 2/3 moving pipeline to CUDA (resident, no offload)")
+        self._txt2img.to("cuda")
+        log(f"stage 2/3 done in {time.time() - t1:.1f}s")
 
         t2 = time.time()
-        log("stage 3/4 enabling VAE tiling + slicing")
-        try:
-            self._txt2img.vae.enable_tiling()
-        except Exception as exc:
-            log(f"  vae.enable_tiling skipped: {exc!r}")
-        try:
-            self._txt2img.vae.enable_slicing()
-        except Exception as exc:
-            log(f"  vae.enable_slicing skipped: {exc!r}")
-        log(f"stage 3/4 done in {time.time() - t2:.1f}s")
-
-        t3 = time.time()
-        log("stage 4/4 building img2img pipeline (shares weights & offload hooks)")
+        log("stage 3/3 building img2img pipeline (shares weights on CUDA)")
         self._img2img = FluxImg2ImgPipeline.from_pipe(self._txt2img)
-        log(f"stage 4/4 done in {time.time() - t3:.1f}s")
+        log(f"stage 3/3 done in {time.time() - t2:.1f}s")
 
         log(f"ready — total load {time.time() - t0:.1f}s")
         self._loaded = True
