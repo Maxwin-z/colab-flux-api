@@ -187,3 +187,41 @@ def test_status_404_for_unknown(test_app):
     client, _, _, _ = test_app
     r = client.get("/tasks/does-not-exist", headers=AUTH)
     assert r.status_code == 404
+
+
+def test_image_download_requires_auth(test_app):
+    client, _, _, _ = test_app
+    r = client.post("/tasks/txt2img", json={"prompt": "x", "width": 256, "height": 256}, headers=AUTH)
+    tid = r.json()["task_id"]
+    _wait_for_status(client, tid, {"done"})
+    r = client.get(f"/tasks/{tid}/image")
+    assert r.status_code == 401
+
+
+def test_image_download_returns_png_when_done(test_app):
+    client, _, _, _ = test_app
+    r = client.post("/tasks/txt2img", json={"prompt": "x", "width": 256, "height": 256}, headers=AUTH)
+    tid = r.json()["task_id"]
+    _wait_for_status(client, tid, {"done"})
+    r = client.get(f"/tasks/{tid}/image", headers=AUTH)
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/png"
+    assert r.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_image_404_for_unknown(test_app):
+    client, _, _, _ = test_app
+    r = client.get("/tasks/nope/image", headers=AUTH)
+    assert r.status_code == 404
+
+
+def test_image_409_when_not_done(test_app, monkeypatch):
+    client, store, _, _ = test_app
+    r = client.post("/tasks/txt2img", json={"prompt": "x", "width": 256, "height": 256}, headers=AUTH)
+    tid = r.json()["task_id"]
+    # Force status back to pending for deterministic 409 check
+    rec = store.get(tid)
+    rec.status = "pending"
+    rec.result_path = None
+    r = client.get(f"/tasks/{tid}/image", headers=AUTH)
+    assert r.status_code == 409

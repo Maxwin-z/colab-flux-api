@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi import status as http_status
+from fastapi.responses import FileResponse
 
 from app.auth import require_token
 from app.pipeline import PipelineProtocol
@@ -108,7 +109,16 @@ def register_routes(
         await queue.put(task_id)
         return TaskSubmitResponse(task_id=task_id, status="pending")
 
-    # /tasks/{id}/image, and / static UI are added in later tasks.
+    @app.get("/tasks/{task_id}/image", dependencies=[Depends(require_token)])
+    async def download_image(task_id: str):
+        rec = store.get(task_id)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="not found")
+        if rec.status != "done" or not rec.result_path:
+            raise HTTPException(status_code=409, detail=f"task status is {rec.status}")
+        return FileResponse(rec.result_path, media_type="image/png", filename=f"{task_id}.png")
+
+    # / static UI are added in later tasks.
     _state = {
         "store": store,
         "queue": queue,
