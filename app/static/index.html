@@ -630,6 +630,36 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: none;
     return parts.join(" · ");
   }
 
+  let stageTimer = null;
+  let stageTimerStart = 0;
+
+  function startStageTimer() {
+    stageTimerStart = performance.now();
+    stopStageTimer();
+    stageTimer = setInterval(() => {
+      const elapsed = Math.floor((performance.now() - stageTimerStart) / 1000);
+      const mm = Math.floor(elapsed / 60).toString().padStart(2, "0");
+      const ss = (elapsed % 60).toString().padStart(2, "0");
+      setStatus("running", `running · ${mm}:${ss}`);
+      const label = document.getElementById("stage-loading-label");
+      if (label) label.textContent = `${mm}:${ss}`;
+    }, 500);
+  }
+  function stopStageTimer() {
+    if (stageTimer) { clearInterval(stageTimer); stageTimer = null; }
+  }
+
+  function setStatus(kind, text) {
+    const el = document.getElementById("status-line");
+    el.classList.remove("running", "error", "success");
+    if (kind) el.classList.add(kind);
+    if (kind === "running") {
+      el.innerHTML = `<span class="dot"></span>${text}`;
+    } else {
+      el.textContent = text || "";
+    }
+  }
+
   function getToken()       { return localStorage.getItem(TOKEN_KEY) || ""; }
   function setToken(t)      { localStorage.setItem(TOKEN_KEY, t); updateTokenIndicator(); }
   function clearToken()     { localStorage.removeItem(TOKEN_KEY); updateTokenIndicator(); showTokenModal(); }
@@ -732,14 +762,21 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: none;
   }
 
   async function pollUntilDone(taskId) {
+    let timerStarted = false;
     while (true) {
       const r = await apiGet(`/tasks/${taskId}`);
       if (!r.ok) throw new Error(`status ${r.status}`);
       const body = await r.json();
       if (body.status === "done") return body;
       if (body.status === "failed") throw new Error(body.error || "task failed");
-      const pos = body.queue_position ? `(queue pos ${body.queue_position})` : "";
-      statusLine.textContent = `status: ${body.status} ${pos}`;
+      if (body.status === "running" && !timerStarted) {
+        startStageTimer();
+        timerStarted = true;
+      }
+      if (!timerStarted) {
+        const pos = body.queue_position ? ` · queue pos ${body.queue_position}` : "";
+        setStatus(null, `${body.status}${pos}`);
+      }
       await new Promise(r => setTimeout(r, 1000));
     }
   }
@@ -754,7 +791,7 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: none;
     const stage = document.getElementById("stage");
     stage.dataset.state = "loading";
     document.getElementById("stage-loading-label").textContent = "submitting…";
-    statusLine.textContent = "submitting…";
+    setStatus(null, "submitting…");
 
     try {
       let body = formValues();
@@ -779,7 +816,9 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: none;
       stage.dataset.state = "done";
       document.getElementById("meta-prompt").textContent = body.prompt || "";
       document.getElementById("meta-params").textContent = formatParams(body, done);
-      statusLine.textContent = "done";
+      stopStageTimer();
+      const finalMs = Date.parse(done.finished_at) - Date.parse(done.started_at);
+      setStatus("success", `done in ${formatDuration(finalMs)}`);
 
       if (window.__fluxAddHistory) {
         await window.__fluxAddHistory({
@@ -789,10 +828,14 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: none;
           params: body,
           blob,
           created_at: new Date().toISOString(),
+          started_at: done.started_at,
+          finished_at: done.finished_at,
+          duration_ms: Date.parse(done.finished_at) - Date.parse(done.started_at),
         });
       }
     } catch (err) {
-      statusLine.textContent = "error: " + err.message;
+      stopStageTimer();
+      setStatus("error", "error: " + err.message);
       stage.dataset.state = resultImg.naturalWidth > 0 ? "done" : "empty";
     } finally {
       submitBtn.disabled = false;
@@ -909,7 +952,7 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: none;
     const stage = document.getElementById("stage");
     stage.dataset.state = "loading";
     document.getElementById("stage-loading-label").textContent = "loading from history…";
-    statusLine.textContent = "loading…";
+    setStatus(null, "loading…");
 
     try {
       const r = await apiGet(`/tasks/${entry.task_id}/image`);
@@ -920,17 +963,17 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: none;
         resultImg.src = url;
         downloadLink.href = url;
         downloadLink.download = `${entry.task_id}.png`;
-        statusLine.textContent = "restored from server";
+        setStatus(null, "restored from server");
       } else {
         revokeIfBlob(resultImg.src);
         resultImg.src = entry.thumbnail;
         downloadLink.removeAttribute("href");
-        statusLine.textContent = "thumbnail only";
+        setStatus(null, "thumbnail only");
       }
     } catch (e) {
       revokeIfBlob(resultImg.src);
       resultImg.src = entry.thumbnail;
-      statusLine.textContent = "thumbnail only";
+      setStatus(null, "thumbnail only");
     }
 
     stage.dataset.state = "done";
