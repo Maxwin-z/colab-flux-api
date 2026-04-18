@@ -72,3 +72,45 @@ def test_healthz_does_not_require_auth(test_app):
     assert body["status"] == "ok"
     assert body["model_loaded"] is True
     assert body["queue_depth"] == 0
+
+
+import time
+
+
+def _wait_for_status(client, task_id, target, timeout=3.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        r = client.get(f"/tasks/{task_id}", headers=AUTH)
+        if r.status_code == 200 and r.json()["status"] in target:
+            return r.json()
+        time.sleep(0.05)
+    raise AssertionError(f"task {task_id} did not reach {target}")
+
+
+def test_txt2img_requires_auth(test_app):
+    client, _, _, _ = test_app
+    r = client.post("/tasks/txt2img", json={"prompt": "x"})
+    assert r.status_code == 401
+
+
+def test_txt2img_validates_body(test_app):
+    client, _, _, _ = test_app
+    r = client.post("/tasks/txt2img", json={"prompt": "x", "width": 1000}, headers=AUTH)
+    assert r.status_code == 422
+
+
+def test_txt2img_submits_and_completes(test_app):
+    client, store, _, _ = test_app
+    r = client.post(
+        "/tasks/txt2img",
+        json={"prompt": "a cat", "width": 256, "height": 256},
+        headers=AUTH,
+    )
+    assert r.status_code == 202
+    body = r.json()
+    assert body["status"] == "pending"
+    task_id = body["task_id"]
+
+    final = _wait_for_status(client, task_id, {"done", "failed"})
+    assert final["status"] == "done", final
+    assert final["image_url"] == f"/tasks/{task_id}/image"
