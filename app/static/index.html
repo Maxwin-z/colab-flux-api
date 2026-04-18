@@ -120,7 +120,138 @@
   if (!getToken()) showTokenModal();
   updateTokenIndicator();
 
-  // Submit/history handlers are attached in Tasks 15-17.
+  // -----------------------------------------------------------------------
+  // Mode toggle
+  // -----------------------------------------------------------------------
+  let mode = "txt2img";
+  document.querySelectorAll(".mode-toggle button").forEach(btn => {
+    btn.addEventListener("click", () => {
+      mode = btn.dataset.mode;
+      document.querySelectorAll(".mode-toggle button").forEach(b =>
+        b.classList.toggle("active", b === btn));
+      document.getElementById("img2img-fields").classList.toggle("hidden", mode !== "img2img");
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // API helpers
+  // -----------------------------------------------------------------------
+  async function apiPost(path, body) {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + getToken() },
+      body: JSON.stringify(body),
+    });
+    if (res.status === 401) { clearToken(); throw new Error("unauthorized"); }
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+  async function apiGet(path) {
+    const res = await fetch(path, { headers: { "Authorization": "Bearer " + getToken() } });
+    if (res.status === 401) { clearToken(); throw new Error("unauthorized"); }
+    return res;
+  }
+
+  // -----------------------------------------------------------------------
+  // Submit form
+  // -----------------------------------------------------------------------
+  const form = document.getElementById("gen-form");
+  const statusLine = document.getElementById("status-line");
+  const resultImg = document.getElementById("result-image");
+  const resultActions = document.getElementById("result-actions");
+  const downloadLink = document.getElementById("download-link");
+
+  function formValues() {
+    const fd = new FormData(form);
+    const v = {
+      prompt: fd.get("prompt"),
+      width: parseInt(fd.get("width"), 10),
+      height: parseInt(fd.get("height"), 10),
+      num_inference_steps: parseInt(fd.get("num_inference_steps"), 10),
+    };
+    const seed = fd.get("seed");
+    if (seed !== null && seed !== "") v.seed = parseInt(seed, 10);
+    if (mode === "img2img") {
+      v.strength = parseFloat(fd.get("strength"));
+    }
+    return v;
+  }
+
+  function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => {
+        const s = r.result;
+        const idx = s.indexOf(",");
+        resolve(idx >= 0 ? s.slice(idx + 1) : s);
+      };
+      r.onerror = reject;
+      r.readAsDataURL(file);
+    });
+  }
+
+  async function pollUntilDone(taskId) {
+    while (true) {
+      const r = await apiGet(`/tasks/${taskId}`);
+      if (!r.ok) throw new Error(`status ${r.status}`);
+      const body = await r.json();
+      if (body.status === "done") return body;
+      if (body.status === "failed") throw new Error(body.error || "task failed");
+      const pos = body.queue_position ? `(queue pos ${body.queue_position})` : "";
+      statusLine.textContent = `status: ${body.status} ${pos}`;
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  }
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!getToken()) { showTokenModal(); return; }
+    resultImg.classList.add("hidden");
+    resultActions.classList.add("hidden");
+    statusLine.textContent = "submitting...";
+
+    try {
+      let body = formValues();
+      let path = "/tasks/txt2img";
+      if (mode === "img2img") {
+        const file = form.elements["init_image_file"].files[0];
+        if (!file) throw new Error("select an image file");
+        body.init_image = await fileToBase64(file);
+        path = "/tasks/img2img";
+      }
+      const submitted = await apiPost(path, body);
+      const done = await pollUntilDone(submitted.task_id);
+
+      const imgRes = await apiGet(done.image_url);
+      const blob = await imgRes.blob();
+      const url = URL.createObjectURL(blob);
+      resultImg.src = url;
+      resultImg.classList.remove("hidden");
+      downloadLink.href = url;
+      downloadLink.download = `${submitted.task_id}.png`;
+      resultActions.classList.remove("hidden");
+      statusLine.textContent = "done";
+
+      // History hook — added in Task 17
+      if (window.__fluxAddHistory) {
+        await window.__fluxAddHistory({
+          task_id: submitted.task_id,
+          kind: mode,
+          prompt: body.prompt,
+          params: body,
+          blob,
+          created_at: new Date().toISOString(),
+        });
+      }
+    } catch (err) {
+      statusLine.textContent = "error: " + err.message;
+    }
+  });
+
+  document.getElementById("rerun-btn").addEventListener("click", () => {
+    form.requestSubmit();
+  });
+
   window.__flux = { getToken, setToken, clearToken, HISTORY_KEY, HISTORY_CAP };
   </script>
 </body>
