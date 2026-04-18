@@ -176,6 +176,60 @@
   }
   .token-pill.set .dot { background: var(--success); }
   .token-pill.set { color: var(--text); }
+
+#history-pane .history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px 12px 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
+}
+#history-pane .history-head .count { font-size: 12px; color: var(--text-dim); }
+#history-pane .history-head .left { display: flex; align-items: baseline; gap: 10px; }
+
+#history-list {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+
+.history-empty {
+  color: var(--text-mute);
+  font-size: 12px;
+  text-align: center;
+  padding: 24px 8px;
+}
+
+.history-item {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface-2);
+  cursor: pointer;
+  transition: transform 120ms;
+}
+.history-item:hover { transform: scale(1.03); }
+.history-item.selected { box-shadow: 0 0 0 2px var(--accent); }
+.history-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.history-item .dur-chip {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  background: #00000099;
+  color: #fff;
+  font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  border-radius: 4px;
+  padding: 1px 5px;
+  pointer-events: none;
+}
 </style>
 </head>
 <body>
@@ -193,7 +247,13 @@
   </header>
 
   <aside id="history-pane">
-    <h3>History <button id="clear-history-btn" type="button" style="font-size:0.7rem;float:right;">clear</button></h3>
+    <div class="history-head">
+      <div class="left">
+        <div class="section-label" style="margin:0">History</div>
+        <span class="count" id="history-count">0 items</span>
+      </div>
+      <button id="clear-history-btn" type="button" class="ghost-btn">Clear</button>
+    </div>
     <div id="history-list"></div>
   </aside>
 
@@ -255,6 +315,15 @@
   const TOKEN_KEY = "flux_token";
   const HISTORY_KEY = "flux_history";
   const HISTORY_CAP = 50;
+
+  let selectedTaskId = null;
+
+  function formatDuration(ms) {
+    if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+    const m = Math.floor(ms / 60_000);
+    const s = Math.floor((ms % 60_000) / 1000);
+    return `${m}m ${s.toString().padStart(2, "0")}s`;
+  }
 
   function getToken()       { return localStorage.getItem(TOKEN_KEY) || ""; }
   function setToken(t)      { localStorage.setItem(TOKEN_KEY, t); updateTokenIndicator(); }
@@ -482,14 +551,36 @@
 
   function renderHistory() {
     const list = document.getElementById("history-list");
+    const count = document.getElementById("history-count");
+    const entries = readHistory();
     list.innerHTML = "";
-    for (const entry of readHistory()) {
+    count.textContent = `${entries.length} item${entries.length === 1 ? "" : "s"}`;
+    if (entries.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "history-empty";
+      empty.textContent = "No images yet";
+      list.appendChild(empty);
+      return;
+    }
+    for (const entry of entries) {
+      const item = document.createElement("div");
+      item.className = "history-item" + (entry.task_id === selectedTaskId ? " selected" : "");
+      item.title = `${entry.kind}: ${entry.prompt || ""}`;
       const img = document.createElement("img");
-      img.className = "thumb";
       img.src = entry.thumbnail;
-      img.title = `${entry.kind}: ${entry.prompt}`;
-      img.addEventListener("click", () => showHistoryEntry(entry));
-      list.appendChild(img);
+      item.appendChild(img);
+      if (typeof entry.duration_ms === "number") {
+        const chip = document.createElement("div");
+        chip.className = "dur-chip";
+        chip.textContent = formatDuration(entry.duration_ms);
+        item.appendChild(chip);
+      }
+      item.addEventListener("click", () => {
+        selectedTaskId = entry.task_id;
+        showHistoryEntry(entry);
+        renderHistory();
+      });
+      list.appendChild(item);
     }
   }
 
