@@ -136,14 +136,59 @@
   .ghost-btn:hover { color: var(--text); border-color: var(--text-dim); background: var(--surface-2); }
 
   .hidden { display: none !important; }
+
+  .wordmark {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+  .wordmark .logo {
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    background: var(--accent);
+  }
+  .wordmark .sep { color: var(--text-mute); font-weight: 400; margin: 0 2px; }
+  .wordmark .sub { color: var(--text-dim); font-weight: 400; }
+
+  .header-right { display: flex; align-items: center; gap: 12px; }
+
+  .token-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-dim);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 4px 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  .token-pill .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-mute);
+  }
+  .token-pill.set .dot { background: var(--success); }
+  .token-pill.set { color: var(--text); }
 </style>
 </head>
 <body>
   <header>
-    <strong>FLUX Image Generator</strong>
-    <div>
-      <span id="token-indicator">token: not set</span>
-      <button id="clear-token-btn" type="button">clear token</button>
+    <div class="wordmark">
+      <span class="logo" aria-hidden="true"></span>
+      <span>FLUX</span>
+      <span class="sep">·</span>
+      <span class="sub">Image Generator</span>
+    </div>
+    <div class="header-right">
+      <span id="token-indicator" class="token-pill"><span class="dot"></span><span class="label">token not set</span></span>
+      <button id="clear-token-btn" type="button" class="ghost-btn">Clear</button>
     </div>
   </header>
 
@@ -215,8 +260,15 @@
   function setToken(t)      { localStorage.setItem(TOKEN_KEY, t); updateTokenIndicator(); }
   function clearToken()     { localStorage.removeItem(TOKEN_KEY); updateTokenIndicator(); showTokenModal(); }
   function updateTokenIndicator() {
-    document.getElementById("token-indicator").textContent =
-      getToken() ? "token: set ✓" : "token: not set";
+    const el = document.getElementById("token-indicator");
+    const label = el.querySelector(".label");
+    if (getToken()) {
+      el.classList.add("set");
+      label.textContent = "token set";
+    } else {
+      el.classList.remove("set");
+      label.textContent = "token not set";
+    }
   }
   function showTokenModal() { document.getElementById("token-modal").classList.remove("hidden"); }
   function hideTokenModal() { document.getElementById("token-modal").classList.add("hidden"); }
