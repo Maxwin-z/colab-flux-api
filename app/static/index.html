@@ -464,6 +464,39 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: none;
 }
 #status-line:not(.running) .dot { display: none; }
 @keyframes pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: #0b0b0dcc;
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  width: 420px;
+  max-width: 92vw;
+  box-shadow: 0 20px 60px #0008;
+}
+.modal h3 { margin: 0 0 8px 0; font-size: 16px; font-weight: 600; }
+.modal p { margin: 0 0 16px 0; font-size: 13px; color: var(--text-dim); }
+.modal .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.modal .save-btn {
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: #fff;
+  font-weight: 600;
+  padding: 8px 16px;
+  font-size: 13px;
+}
+.modal .save-btn:hover { background: var(--accent-hover); }
 </style>
 </head>
 <body>
@@ -588,13 +621,13 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: none;
     </form>
   </section>
 
-  <div id="token-modal" class="modal-backdrop hidden">
+  <div id="token-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="token-title">
     <div class="modal">
-      <h3>Enter API token</h3>
-      <p>The token is printed in the Colab log at startup.</p>
-      <input id="token-input" type="password" style="width:100%;" />
-      <div style="margin-top:0.5rem;display:flex;gap:0.5rem;justify-content:flex-end;">
-        <button id="token-save" type="button">Save</button>
+      <h3 id="token-title">Enter API token</h3>
+      <p>The token is printed in the Colab log at startup. It is stored in your browser only.</p>
+      <input id="token-input" type="password" placeholder="paste token here" />
+      <div class="actions">
+        <button id="token-save" type="button" class="save-btn">Save</button>
       </div>
     </div>
   </div>
@@ -1049,6 +1082,22 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: none;
   renderHistory();
 
   window.__flux = { getToken, setToken, clearToken, HISTORY_KEY, HISTORY_CAP };
+
+  document.addEventListener("keydown", (e) => {
+    // Esc: close token modal
+    if (e.key === "Escape") {
+      const modal = document.getElementById("token-modal");
+      if (!modal.classList.contains("hidden")) hideTokenModal();
+    }
+    // Cmd/Ctrl + Enter: submit the form
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      const form = document.getElementById("gen-form");
+      if (form && !document.getElementById("generate-btn").disabled) {
+        e.preventDefault();
+        form.requestSubmit();
+      }
+    }
+  });
   </script>
 </body>
 </html>
