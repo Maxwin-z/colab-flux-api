@@ -45,10 +45,8 @@ class FakePipeline:
 
 
 class FluxPipelineHolder:
-    """Real FLUX.1-schnell pipeline holder. Body implemented in Task 13.
-
-    Before Task 13 this class exists only to satisfy imports in main.py.
-    Do NOT instantiate it in tests — use FakePipeline.
+    """FLUX.1 [schnell] pipeline holder. Loads txt2img and img2img pipelines
+    sharing model weights. Only safe to call on a machine with CUDA.
     """
 
     def __init__(self, model_id: str = "black-forest-labs/FLUX.1-schnell") -> None:
@@ -61,7 +59,66 @@ class FluxPipelineHolder:
         return self._loaded
 
     def load(self) -> None:
-        raise NotImplementedError("FluxPipelineHolder.load is implemented in Task 13")
+        import torch
+        from diffusers import FluxPipeline, FluxImg2ImgPipeline
 
-    def generate(self, kind: str, params: dict[str, Any]) -> Image.Image:
-        raise NotImplementedError("FluxPipelineHolder.generate is implemented in Task 13")
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA GPU required for FluxPipelineHolder")
+
+        dtype = torch.bfloat16
+        self._txt2img = FluxPipeline.from_pretrained(self._model_id, torch_dtype=dtype)
+        self._txt2img.to("cuda")
+        try:
+            self._txt2img.vae.enable_tiling()
+        except Exception:
+            pass
+
+        # img2img pipeline reuses the same model weights
+        self._img2img = FluxImg2ImgPipeline(
+            vae=self._txt2img.vae,
+            text_encoder=self._txt2img.text_encoder,
+            text_encoder_2=self._txt2img.text_encoder_2,
+            tokenizer=self._txt2img.tokenizer,
+            tokenizer_2=self._txt2img.tokenizer_2,
+            transformer=self._txt2img.transformer,
+            scheduler=self._txt2img.scheduler,
+        )
+
+        self._loaded = True
+
+    def generate(self, kind: str, params: dict):
+        import torch
+        from PIL import Image
+
+        if not self._loaded:
+            raise RuntimeError("pipeline not loaded")
+
+        seed = params.get("seed")
+        generator = None
+        if seed is not None:
+            generator = torch.Generator(device="cuda").manual_seed(int(seed))
+
+        if kind == "txt2img":
+            result = self._txt2img(
+                prompt=params["prompt"],
+                width=int(params["width"]),
+                height=int(params["height"]),
+                num_inference_steps=int(params["num_inference_steps"]),
+                guidance_scale=float(params["guidance_scale"]),
+                generator=generator,
+            )
+            return result.images[0]
+
+        if kind == "img2img":
+            init = Image.open(params["init_image_path"]).convert("RGB")
+            result = self._img2img(
+                prompt=params["prompt"],
+                image=init,
+                strength=float(params["strength"]),
+                num_inference_steps=int(params["num_inference_steps"]),
+                guidance_scale=float(params["guidance_scale"]),
+                generator=generator,
+            )
+            return result.images[0]
+
+        raise ValueError(f"unknown kind: {kind}")
